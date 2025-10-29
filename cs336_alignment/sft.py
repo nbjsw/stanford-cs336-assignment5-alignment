@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from transformers import PreTrainedTokenizer
 
 
@@ -103,4 +104,16 @@ def tokenize_prompt_and_output(prompt_strs: list[str], output_strs: list[str], t
         "labels": torch.stack(final_labels), 
         "response_mask": torch.stack(final_response_mask)
     }
+
+
+def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
+    """
+    Computes the per-token entropy of next-token predictions.
+    H(p) = - sum(p(x) * log(p(x)))
+    """
+    log_probs = F.log_softmax(logits, dim=-1)
+    probs = torch.exp(log_probs)
+    entropy_per_token = - probs * log_probs
+    entropy_per_token = torch.sum(entropy_per_token, dim=-1)
+    return entropy_per_token
 
