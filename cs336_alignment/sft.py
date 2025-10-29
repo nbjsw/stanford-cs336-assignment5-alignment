@@ -1,7 +1,31 @@
 import torch
 import torch.nn.functional as F
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizer
 
+# 为什么这些指标在预训练时相对不那么重要或不被直接优化的原因：
+# 1. 预训练的目标：最大化似然（最大化平均对数概率）预训练阶段（例如，使用大量文本数据进行下一个词预测）的目标非常简单和基础：
+# 让模型学会语言的基本规律和知识。优化的指标： 模型通常直接优化负对数似然损失 (Negative Log-Likelihood, NLL)，
+# 这等价于最小化平均对数概率的负值。$$\text{Loss}_{\text{Pre-train}} = -\frac{1}{N} \sum_{i=1}^N \log p_\theta(y_i | x_i)$$
+# Log-Probability (对数概率) 的重要性： 至关重要！ 预训练的核心就是不断提高这个平均对数概率。如果平均 $\log p$ 高，说明模型在整个训练集上拟合得好。
+
+# 2. 熵（Entropy）在预训练时是自然涌现的，而非直接优化目标
+# 数据驱动： 预训练数据（如网页、书籍）本身具有巨大的多样性和不确定性。例如，对于句子“我喜欢吃...”，后面可以是“苹果”、“香蕉”、“面条”等等，分布是相对平坦的。
+
+# 自然结果： 模型在学习拟合这个数据分布时，它会自动学会在不确定的地方产生较高的熵，在确定的地方（如句末标点）产生较低的熵。
+
+# 为什么不直接优化熵？ 如果我们强行加入一个目标函数来最小化熵（即鼓励模型过度自信），这会抑制模型的学习能力和多样性。
+# 模型会倾向于只记住训练数据中最常见的答案，而无法泛化到新颖的、合理的但训练数据中不常见的答案上。这会导致欠拟合或生成文本的贫乏。
+
+# 3. 微调阶段（SFT/RL）关注的额外因素
+# 在微调阶段，我们不再只是要求模型“学会语言”，而是要求它**“根据人类偏好或特定任务进行调整”**：
+
+# SFT（监督微调）： 目标是模仿人类的回答风格。此时，Log-Probability（对正确回答的概率）依然是优化的核心。
+
+# RL（强化学习）： 这是熵变得更重要的阶段。
+
+# 平衡准确性和多样性： 仅仅追求最高的 Log-Probability（即只模仿奖励模型给出的“最佳”答案）会导致模型行为僵化，探索性差，容易陷入局部最优。
+
+# 熵作为正则化项： 在 RL 损失中加入一个基于熵的项（通常是正的，鼓励高熵），就是为了防止策略（Policy）过快地收敛到一个过于尖锐（低熵）的分布上，从而保持模型的灵活性和多样性。
 
 def tokenize_prompt_and_output(prompt_strs: list[str], output_strs: list[str], tokenizer: PreTrainedTokenizer):
     """
@@ -106,14 +130,84 @@ def tokenize_prompt_and_output(prompt_strs: list[str], output_strs: list[str], t
     }
 
 
+# H(p) = - sum(p(x) * log(p(x)))
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     """
-    Computes the per-token entropy of next-token predictions.
-    H(p) = - sum(p(x) * log(p(x)))
+    Get the entropy of the next-token predictions (i.e., entropy over the vocabulary dimension).
+
+    Args:
+        logits: Tensor of shape (batch_size, sequence_length, vocab_size) containing unnormalized logits.
+
+    Returns:
+        torch.Tensor Shape (batch_size, sequence_length). The entropy for each next-token prediction.
     """
     log_probs = F.log_softmax(logits, dim=-1)
     probs = torch.exp(log_probs)
     entropy_per_token = - probs * log_probs
     entropy_per_token = torch.sum(entropy_per_token, dim=-1)
     return entropy_per_token
+
+
+
+# log pθ(y | x) = log [softmax(fθ(x))]y
+def get_response_log_probs(
+    model: PreTrainedModel,
+    input_ids: torch.Tensor,
+    labels: torch.Tensor,
+    return_token_entropy: bool = False,
+) -> dict[str, torch.Tensor]:
+    """
+    Get per-token conditional log-probabilities (given the previous tokens) from a causal language model,
+    and optionally the entropy of the model’s next-token distribution.
+    
+    Args:
+        model: PreTrainedModel HuggingFace model used for scoring (placed on the correct device
+               and in inference mode if gradients should not be computed).
+        input_ids: torch.Tensor shape (batch_size, sequence_length), concatenated prompt +
+                   response tokens as produced by your tokenization method.
+        labels: torch.Tensor shape (batch_size, sequence_length), labels as produced by your tokenization method.
+        return_token_entropy: bool If True, also return per-token entropy by calling compute_entropy.
+
+    Returns:
+        dict[str, torch.Tensor].
+        "log_probs" shape (batch_size, sequence_length), conditional log-probabilities log pθ(xt | x<t).
+        "token_entropy" optional, shape (batch_size, sequence_length), per-token entropy for each position
+        (present only if return_token_entropy=True).
+    """
+    model.eval()
+    with torch.no_grad():
+        # Shape (batch_size, sequence_length, vocab)
+        logits = model(input_ids).logits
+    log_probs = F.log_softmax(logits, dim=-1)
+    # 扩展 labels 以便能用于 gather 操作，目标索引维度是最后一维 (-1)
+    # labels_expanded 形状: (batch_size, sequence_length, 1)
+    # labels = torch.tensor([
+    #     [10, 25, 300],  # 批次 1
+    #     [5,  15, 80]    # 批次 2
+    # ])
+    #
+    # tensor([[[ 10],
+    #          [ 25],
+    #          [300]],
+    #
+    #         [[  5],
+    #          [ 15],
+    #          [ 80]]])
+    labels_expanded = labels.unsqueeze(-1)
+
+    # 使用 torch.gather 提取：log_probs 形状: (batch_size, sequence_length, 1)
+    log_probs_gathered = torch.gather(log_probs, dim=-1, index=labels_expanded)
+    # 挤压掉最后一个维度，得到最终的 (batch_size, sequence_length) 形状
+    log_probs = log_probs_gathered.squeeze(-1)
+
+    results: dict[str, torch.Tensor] = {
+        "log_probs": log_probs
+    }
+
+    # 5. 可选：计算并返回 token 熵
+    if return_token_entropy:
+        token_entropy = compute_entropy(logits)
+        results["token_entropy"] = token_entropy
+
+    return results 
 
