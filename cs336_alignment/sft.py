@@ -211,3 +211,35 @@ def get_response_log_probs(
 
     return results 
 
+def masked_normalize(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    normalize_constant: float,
+    dim: int | None = None,
+) -> torch.Tensor:
+    # 1. 确保 mask 是浮点型，以便进行乘法操作 (mask 1 或 0)
+    mask_float = mask.to(tensor.dtype)
+
+    # 2. 将 tensor 中被 mask 掉 (mask == 0) 的部分置为 0
+    # 只有 mask_float 为 1 的元素会保留其原始值，其他都被置零
+    masked_tensor = tensor * mask_float
+
+    # 3. 求和
+    if dim is not None:
+        # 沿着指定的维度求和
+        summed_result = torch.sum(masked_tensor, dim=dim)
+    else:
+        # 对所有维度求和
+        summed_result = torch.sum(masked_tensor)
+
+    # 3. 求和
+    if dim is not None:
+        # 沿着指定的维度求和
+        summed_result = torch.sum(masked_tensor, dim=dim)
+    else:
+        # 对所有维度求和
+        summed_result = torch.sum(masked_tensor)
+
+    normalized_sum = summed_result / normalize_constant
+    return normalized_sum
+
