@@ -94,3 +94,30 @@ def compute_group_normalized_rewards(
 
     return advantages, raw_rewards, metadata
 
+
+# 在 LLM 强化学习 (RLHF) 的这个阶段（如 GRPO 或 PPO），回报 (Reward) 或优势 (Advantage) 是对整个生成的 Response 序列的一次性评价，
+# 是一个标量，而非针对序列中的每个 Token 的。1. 奖励（Reward）的性质在您查看的这个作业背景中（使用 MATH 数据集进行推理 RL），
+# 奖励函数的定义是稀疏的 (Sparse) 和终端的 (Terminal) 1：稀疏奖励：模型在生成 Response 的中间步骤（即 $t=0$ 到 $T-1$）获得的奖励 $r_t$ 被设为 零 (0) 
+# 2。终端奖励：只有在 Response 结束时（即采取终端动作 $a_T$ 时），奖励 $r_T$ 才会被计算
+# 作业中的 Advantage 是一个特例（序列不变）在您这份 CS336 Assignment 5 的具体实现中，这个矛盾是由于 LLM RLHF 的特殊设定 导致的。
+# 在您的作业中，Advantage $A_t$ 被简化并视为在序列上是不变的。
+# 在传统的策略梯度（如 REINFORCE 或带 V-Function 的 A2C）中，优势函数是时变的：$A_t = R(\tau) - V(s_t)$。
+def compute_naive_policy_gradient_loss(
+    raw_rewards_or_advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Compute the policy-gradient loss at every token, where raw_rewards_or_advantages is either
+    the raw reward or an already-normalized advantage.
+
+    Args:
+        raw_rewards_or_advantages: Shape (batch_size, 1), scalar reward/advantage for each rollout response.
+        policy_log_probs: Shape (batch_size, sequence_length), logprobs for each token.
+
+    Returns:
+        torch.Tensor Shape (batch_size, sequence_length), the per-token policy-gradient loss (to
+        be aggregated across the batch and sequence dimensions in the training loop).
+    """
+    per_token_gradient_term = raw_rewards_or_advantages * policy_log_probs
+    naive_policy_gradient_loss = -per_token_gradient_term
+    return naive_policy_gradient_loss
