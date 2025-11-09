@@ -273,3 +273,27 @@ def compute_policy_gradient_loss(
 
     return loss, metadata
 
+
+def masked_mean(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    dim: int | None = None,
+) -> torch.Tensor:
+    """
+    Compute the mean of tensor along a given dimension, considering only those elements where
+    mask == 1.
+
+    Args:
+        tensor: torch.Tensor The data to be averaged.
+        mask: torch.Tensor Same shape as tensor; positions with 1 are included in the mean.
+        dim: int | None Dimension over which to average. If None, compute the mean over all
+            masked elements.
+
+    Returns:
+        torch.Tensor The masked mean; shape matches tensor.mean(dim) semantics.
+    """
+    numerator = (tensor * mask).sum(dim=dim)
+    denominator = mask.sum(dim=dim)
+    # pytorch 0 / 0 ->  nan
+    return numerator / denominator
+
