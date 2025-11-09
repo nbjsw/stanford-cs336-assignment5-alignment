@@ -121,3 +121,71 @@ def compute_naive_policy_gradient_loss(
     per_token_gradient_term = raw_rewards_or_advantages * policy_log_probs
     naive_policy_gradient_loss = -per_token_gradient_term
     return naive_policy_gradient_loss
+
+
+def compute_grpo_clip_loss(
+    advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor,
+    old_log_probs: torch.Tensor,
+   cliprange: float,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Computes the per-token GRPO-Clip loss.
+
+    Args:
+        advantages: torch.Tensor Shape (batch_size, 1), per-example advantages A.
+        policy_log_probs: torch.Tensor Shape (batch_size, sequence_length), per-token log
+        probs from the policy being trained.
+        old_log_probs: torch.Tensor Shape (batch_size, sequence_length), per-token log probs
+            from the old policy.
+        cliprange: float Clip parameter ϵ (e.g. 0.2).
+
+    Returns:
+        tuple[torch.Tensor, dict[str, torch.Tensor]].
+        loss torch.Tensor of shape (batch_size, sequence_length), the per-token clipped loss.
+        metadata dict containing whatever you want to log. We suggest logging whether each 
+            token was clipped or not, i.e., whether the clipped policy gradient loss on the RHS of
+            the min was lower than the LHS.
+    """
+    # 1. 计算新旧策略的对数概率之差 (log(pi_new) - log(pi_old))
+    # 形状: (batch_size, sequence_length)
+    log_ratio = policy_log_probs - old_log_probs
+
+    # 2. 计算策略比率 (Ratio): r_t(theta) = exp(log_ratio)
+    # 形状: (batch_size, sequence_length)
+    ratio = torch.exp(log_ratio)
+
+    # --- PPO/GRPO Clipping Objective (最大化目标 J) 的右项 ---
+    # 3a. 计算裁剪项: clip(r_t(theta), 1-eps, 1+eps)
+    clipped_ratio = torch.clamp(ratio, 1.0 - cliprange, 1.0 + cliprange)
+
+    # 4. 计算最终的 PPO/GRPO Objective J (最大化目标)
+    # PPO Objective: min(J_LHS, J_RHS)
+    # 形状: (batch_size, sequence_length)
+    ppo_objective = torch.min(ratio * advantages, clipped_ratio * advantages)
+
+    # 5. 计算最终的 Loss L (最小化损失)
+    # Loss = -J (为了使用梯度下降最小化 Loss 来实现最大化 Objective)
+    loss = -ppo_objective
+
+    # 6. 计算元数据 (Metadata)
+    # 我们需要知道有多少 token 被裁剪了。
+    # 对于 A >= 0: J = min(unclipped, clipped)
+    #   如果 unclipped > clipped，说明被裁剪了 (即 ratio > 1 + cliprange)
+    # 对于 A < 0: J = min(unclipped, clipped)
+    #   如果 unclipped < clipped，说明被裁剪了 (即 ratio < 1 - cliprange)
+
+    # Note: 这里的逻辑比单纯比较 unclipped_term 和 clipped_term 更健壮，
+    # 因为它直接基于 ratio 和 cliprange 检查。
+
+    # 检查 ratio 是否超出 [1-eps, 1+eps] 范围
+    is_clipped = (ratio > 1.0 + cliprange) | (ratio < 1.0 - cliprange)
+
+    # 计算裁剪率 (Clip Fraction): 占总数的比例 (这里返回的是布尔张量，后续求平均)
+    clip_fraction = is_clipped.float()
+
+    metadata = {
+        "clip_fraction": clip_fraction,
+    }
+
+    return loss, metadata
