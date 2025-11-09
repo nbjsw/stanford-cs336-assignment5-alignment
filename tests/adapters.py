@@ -247,15 +247,21 @@ def run_grpo_microbatch_train_step(
             Needed for loss_type="grpo_clip".
         cliprange: float | None, the clip range for the ratio. 
             Needed for loss_type="grpo_clip".
-        constant_normalize_factor: int | None, provided if we want to sum over 
-            the sequence dimension and normalize by this constant factor
-            (as in Dr. GRPO).
 
     Returns:
         tuple[torch.Tensor, dict[str, torch.Tensor]]: 
             the policy gradient loss and its metadata.
     """
-    raise NotImplementedError
+    return rl.grpo_microbatch_train_step(
+        policy_log_probs,
+        response_mask,
+        gradient_accumulation_steps,
+        loss_type,
+        raw_rewards,
+        advantages,
+        old_log_probs,
+        cliprange
+    )
 
 
 def run_masked_normalize(

@@ -1,6 +1,6 @@
 import torch
 from einops import rearrange, reduce
-from typing import Callable, Literal
+from typing import Callable, Literal, Optional
 
 
 def compute_group_normalized_rewards(
@@ -296,4 +296,30 @@ def masked_mean(
     denominator = mask.sum(dim=dim)
     # pytorch 0 / 0 ->  nan
     return numerator / denominator
+
+
+def grpo_microbatch_train_step(
+    policy_log_probs: torch.Tensor,
+    response_mask: torch.Tensor,
+    gradient_accumulation_steps: int,
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip", "grpo_no_clip"],
+    raw_rewards: Optional[torch.Tensor] = None,
+    advantages: Optional[torch.Tensor] = None,
+    old_log_probs: Optional[torch.Tensor] = None,
+    cliprange: Optional[float] = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    per_token_loss, loss_metadata = compute_policy_gradient_loss(
+        policy_log_probs,
+        loss_type,
+        raw_rewards=raw_rewards,
+        advantages=advantages,
+        old_log_probs=old_log_probs,
+        cliprange=cliprange,
+    )
+    max_seq_len = response_mask.size(1)
+    per_example_loss = masked_mean(per_token_loss, response_mask, dim=1)
+    batch_loss = per_example_loss.mean()
+    microbatch_loss = batch_loss / gradient_accumulation_steps
+    microbatch_loss.backward()
+    return microbatch_loss, loss_metadata
 
