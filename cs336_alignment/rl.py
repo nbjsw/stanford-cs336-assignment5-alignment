@@ -316,8 +316,7 @@ def grpo_microbatch_train_step(
         old_log_probs=old_log_probs,
         cliprange=cliprange,
     )
-    max_seq_len = response_mask.size(1)
-    per_example_loss = masked_mean(per_token_loss, response_mask, dim=1)
+    per_example_loss = masked_mean(per_token_loss, response_mask, dim=-1)
     batch_loss = per_example_loss.mean()
     microbatch_loss = batch_loss / gradient_accumulation_steps
     microbatch_loss.backward()
