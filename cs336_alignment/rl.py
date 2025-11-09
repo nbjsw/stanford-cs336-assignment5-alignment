@@ -1,6 +1,6 @@
 import torch
 from einops import rearrange, reduce
-from typing import Callable
+from typing import Callable, Literal
 
 
 def compute_group_normalized_rewards(
@@ -189,3 +189,87 @@ def compute_grpo_clip_loss(
     }
 
     return loss, metadata
+
+
+def compute_policy_gradient_loss(
+    policy_log_probs: torch.Tensor,
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+    raw_rewards: torch.Tensor | None = None,
+    advantages: torch.Tensor | None = None,
+    old_log_probs: torch.Tensor | None = None,
+    cliprange: float | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Select and compute the desired policy-gradient loss.
+
+    Args:
+        policy_log_probs (batch_size, sequence_length), per-token log-probabilities from the
+        policy being trained.
+        loss_type One of "no_baseline", "reinforce_with_baseline", or "grpo_clip".
+        raw_rewards Required if loss_type == "no_baseline"; shape (batch_size, 1).
+        advantages Required for "reinforce_with_baseline" and "grpo_clip"; shape (batch_size, 1).
+        old_log_probs Required for "grpo_clip"; shape (batch_size, sequence_length).
+        cliprange Required for "grpo_clip"; scalar ϵ used for clipping.
+
+    Returns:
+        tuple[torch.Tensor, dict[str, torch.Tensor]].
+        loss (batch_size, sequence_length), per-token loss.
+        metadata dict, statistics from the underlying routine (e.g., clip fraction for GRPO-Clip).
+    """
+    # 初始化空的元数据字典
+    metadata: dict[str, torch.Tensor | float | Any] = {"loss_type": loss_type}
+
+    if loss_type == "no_baseline":
+        # REINFORCE (无基线)
+        if raw_rewards is None:
+            raise ValueError(
+                "For loss_type='no_baseline', raw_rewards is required."
+            )
+        loss = compute_naive_policy_gradient_loss(
+            raw_rewards,
+            policy_log_probs,
+        )
+        # Naive loss 不返回额外的 metadata，在这里添加一个空的
+        metadata["used_input"] = "raw_rewards"
+
+    elif loss_type == "reinforce_with_baseline":
+        # REINFORCE with Baseline (使用优势值 A)
+        if advantages is None:
+            raise ValueError(
+                "For loss_type='reinforce_with_baseline', advantages is required."
+            )
+        
+        loss = compute_naive_policy_gradient_loss(
+            advantages,
+            policy_log_probs,
+        )
+        metadata["used_input"] = "advantages"
+
+    elif loss_type == "grpo_clip":
+        # PPO / GRPO Clip Loss
+        if advantages is None or old_log_probs is None or cliprange is None:
+            raise ValueError(
+                "For loss_type='grpo_clip', advantages, old_log_probs, and cliprange are all required."
+            )
+
+        # 调用前面修复好的 GRPO Clip Loss 函数
+        loss, grpo_metadata = compute_grpo_clip_loss(
+            advantages,
+            policy_log_probs,
+            old_log_probs,
+            cliprange,
+        )
+        metadata.update(grpo_metadata)
+        metadata["used_input"] = "advantages"
+        
+    else:
+        # 兜底：处理非法的 loss_type
+        raise ValueError(
+            f"Unknown loss_type: {loss_type}. Must be one of 'no_baseline', 'reinforce_with_baseline', or 'grpo_clip'."
+        )
+
+    # 记录最终的平均损失（通常用于训练循环的日志）
+    metadata["mean_loss"] = loss.mean().item()
+
+    return loss, metadata
+
